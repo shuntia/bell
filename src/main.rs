@@ -32,13 +32,13 @@ fn run(opts: Options) -> Result<(), String> {
     let data = data::load_app_data();
     if opts.once {
         if let Some((label, msg, remaining)) = current_or_next(&data) {
-            let remaining = match &opts.format {
-                OutputFormat::Plain => format_duration(remaining),
+            let line = match &opts.format {
+                OutputFormat::Plain => default_line(label, &msg, remaining),
                 OutputFormat::Pattern(pattern) => {
-                    format_duration_with_pattern(remaining, pattern)
+                    format_line_with_pattern(pattern, label, &msg, remaining)
                 }
             };
-            print_plain_line(label, msg, remaining, true);
+            print_line(line, true);
         } else {
             return Err("No current or upcoming periods found.".to_string());
         }
@@ -47,13 +47,13 @@ fn run(opts: Options) -> Result<(), String> {
     loop {
         sleep(Duration::from_secs(opts.interval_secs));
         if let Some((label, msg, remaining)) = current_or_next(&data) {
-            let remaining = match &opts.format {
-                OutputFormat::Plain => format_duration(remaining),
+            let line = match &opts.format {
+                OutputFormat::Plain => default_line(label, &msg, remaining),
                 OutputFormat::Pattern(pattern) => {
-                    format_duration_with_pattern(remaining, pattern)
+                    format_line_with_pattern(pattern, label, &msg, remaining)
                 }
             };
-            print_plain_line(label, msg, remaining, false);
+            print_line(line, false);
         }
     }
 }
@@ -109,7 +109,8 @@ fn usage() -> &'static str {
     "Usage: bell [--once] [--format plain|<pattern>] [--interval <secs>]
     --once                Print once and exit
     --format plain        Default output format (with label/message)
-    --format <pattern>    Duration pattern, e.g. \"[HH]:[MM]:[SS]\"
+    --format <pattern>    Line pattern with tokens: [Label] [Period] [HH] [MM] [SS]
+                          Example: \"Period: [Period] | [HH]:[MM]:[SS]\"
     --interval <secs>     Refresh interval for continuous mode (default: 1)"
 }
 
@@ -135,18 +136,23 @@ fn current_or_next(data: &data::AppData) -> Option<(&'static str, String, time::
     Some((label, msg, remaining))
 }
 
-fn print_plain_line(label: &str, msg: String, remaining: String, newline: bool) {
-    let mut out = stdout().lock();
-    let line = format!(
-        "{}{}: {} | Remaining: {}",
-        if newline { "" } else { "\r" },
+fn default_line(label: &str, msg: &str, remaining: time::Duration) -> String {
+    format!(
+        "{}: {} | Remaining: {}",
         label,
         msg,
-        remaining,
-    );
-    out.write_all(line.as_bytes()).unwrap();
+        format_duration(remaining),
+    )
+}
+
+fn print_line(line: String, newline: bool) {
+    let mut out = stdout().lock();
     if newline {
+        out.write_all(line.as_bytes()).unwrap();
         out.write_all(b"\n").unwrap();
+    } else {
+        let line = format!("\r{line}");
+        out.write_all(line.as_bytes()).unwrap();
     }
     out.flush().unwrap();
 }
@@ -156,6 +162,14 @@ fn format_duration(duration: time::Duration) -> String {
 }
 
 fn format_duration_with_pattern(duration: time::Duration, pattern: &str) -> String {
+    let (hours, minutes, seconds) = duration_tokens(duration, pattern);
+    pattern
+        .replace("[HH]", &hours)
+        .replace("[MM]", &minutes)
+        .replace("[SS]", &seconds)
+}
+
+fn duration_tokens(duration: time::Duration, pattern: &str) -> (String, String, String) {
     let total_seconds = duration.whole_seconds().max(0);
     let mut hours = total_seconds / 3600;
     let mut minutes = (total_seconds % 3600) / 60;
@@ -168,10 +182,26 @@ fn format_duration_with_pattern(duration: time::Duration, pattern: &str) -> Stri
         seconds += minutes * 60;
         minutes = 0;
     }
+    (
+        hours.to_string(),
+        format!("{:02}", minutes),
+        format!("{:02}", seconds),
+    )
+}
+
+fn format_line_with_pattern(
+    pattern: &str,
+    label: &str,
+    period: &str,
+    remaining: time::Duration,
+) -> String {
+    let (hours, minutes, seconds) = duration_tokens(remaining, pattern);
     pattern
-        .replace("[HH]", &hours.to_string())
-        .replace("[MM]", &format!("{:02}", minutes))
-        .replace("[SS]", &format!("{:02}", seconds))
+        .replace("[Label]", label)
+        .replace("[Period]", period)
+        .replace("[HH]", &hours)
+        .replace("[MM]", &minutes)
+        .replace("[SS]", &seconds)
 }
 
 fn next_period_from(
